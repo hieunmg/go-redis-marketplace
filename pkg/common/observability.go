@@ -2,11 +2,14 @@ package common
 
 import (
 	"fmt"
-	"go-redis-marketplace/pkg/config"
+	"log/slog"
 	"net/http"
+	"os"
 
+	"go-redis-marketplace/pkg/config"
+
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	log "github.com/sirupsen/logrus"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	propjaeger "go.opentelemetry.io/contrib/propagators/jaeger"
 	"go.opentelemetry.io/otel"
@@ -42,20 +45,43 @@ func (injector *ObservabilityInjector) Register(service string) error {
 	}
 	if injector.promPort != "" {
 		go func() {
-			log.Infof("starting prom metrics on  :%s", injector.promPort)
-			err := http.ListenAndServe(fmt.Sprintf(":%s", injector.promPort), promhttp.Handler())
+			promHttpSrv := &http.Server{Addr: fmt.Sprintf(":%s", injector.promPort)}
+			m := http.NewServeMux()
+			// Create HTTP handler for Prometheus metrics.
+			m.Handle("/metrics", promhttp.HandlerFor(
+				prometheus.DefaultGatherer,
+				promhttp.HandlerOpts{
+					// Opt into OpenMetrics e.g. to support exemplars.
+					EnableOpenMetrics: true,
+				},
+			))
+			promHttpSrv.Handler = m
+			slog.Info("starting prom metrics on  :" + injector.promPort)
+			err := promHttpSrv.ListenAndServe()
 			if err != nil {
-				log.Fatal(err)
+				slog.Error(err.Error())
+				os.Exit(1)
 			}
 		}()
 	}
 	return nil
 }
 
+func otelReqFilter(req *http.Request) bool {
+	filters := []string{"/metrics", "/", "/healthcheck"}
+	for _, filter := range filters {
+		if filter == req.URL.Path {
+			return false
+		}
+	}
+	return true
+}
+
 func NewOtelHttpHandler(h http.Handler, operation string) http.Handler {
 	httpOptions := []otelhttp.Option{
 		otelhttp.WithTracerProvider(otel.GetTracerProvider()),
 		otelhttp.WithPropagators(otel.GetTextMapPropagator()),
+		otelhttp.WithFilter(otelReqFilter),
 	}
 	return otelhttp.NewHandler(h, operation, httpOptions...)
 }

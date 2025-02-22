@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"go-redis-marketplace/pkg/common"
 	"go-redis-marketplace/pkg/config"
-	"time"
 
 	"github.com/valkey-io/valkey-go"
 )
@@ -69,8 +68,6 @@ type ValkeyRpushPayload struct {
 }
 
 func NewValkeyClient(conf *config.Config) (valkey.Client, error) {
-	expirationHour = conf.Valkey.ExpirationHour
-	expiration = time.Duration(expirationHour) * time.Hour
 	ValkeyClient, err := valkey.NewClient(valkey.ClientOption{
 		InitAddress: common.GetServerAddrs(conf.Valkey.Addrs),
 		Password:    conf.Valkey.Password,

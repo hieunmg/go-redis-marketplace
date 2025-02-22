@@ -4,29 +4,50 @@ import (
 	"io"
 	"os"
 
+	"log/slog"
+
+	"go-redis-marketplace/pkg/config"
+
 	"github.com/gin-gonic/gin"
-	log "github.com/sirupsen/logrus"
 )
 
-type HttpLogrus struct {
-	*log.Entry
+type HttpLog struct {
+	*slog.Logger
 }
-type GrpcLogrus struct {
-	*log.Entry
+type GrpcLog struct {
+	*slog.Logger
 }
 
-func InitLogging() {
+func init() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level:     slog.LevelInfo,
+		AddSource: false,
+	})))
+}
+
+func NewHttpLog(config *config.Config) (HttpLog, error) {
+	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level:     slog.LevelInfo,
+		AddSource: false,
+	}).WithAttrs([]slog.Attr{
+		slog.String("proto", "http"),
+	})
+	logger := slog.New(logHandler)
+
 	gin.SetMode(gin.ReleaseMode)
 	gin.DefaultWriter = io.Writer(os.Stderr)
-	log.SetOutput(os.Stderr)
-	log.SetLevel(log.InfoLevel)
-	log.SetFormatter(&log.TextFormatter{FullTimestamp: true, DisableColors: true})
+
+	return HttpLog{logger}, nil
 }
 
-func NewHttpLogrus() HttpLogrus {
-	return HttpLogrus{log.WithField("type", "http")}
-}
+func NewGrpcLog(config *config.Config) (GrpcLog, error) {
+	logHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level:     slog.LevelError,
+		AddSource: false,
+	}).WithAttrs([]slog.Attr{
+		slog.String("proto", "grpc"),
+	})
+	logger := slog.New(logHandler)
 
-func NewGrpcLogrus() GrpcLogrus {
-	return GrpcLogrus{log.WithField("type", "grpc")}
+	return GrpcLog{logger}, nil
 }

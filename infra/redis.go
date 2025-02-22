@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"go-redis-marketplace/pkg/common"
-	"go-redis-marketplace/pkg/config"
 	"time"
 
-	"github.com/go-redis/redis/extra/redisotel/v8"
-	"github.com/go-redis/redis/v8"
+	"go-redis-marketplace/pkg/common"
+	"go-redis-marketplace/pkg/config"
+
+	"github.com/redis/go-redis/extra/redisotel/v9"
+	"github.com/redis/go-redis/v9"
 )
 
 var (
@@ -19,8 +20,7 @@ var (
 	// ErrRedisPipelineCmdNotFound is redis command not found error
 	ErrRedisPipelineCmdNotFound = errors.New("redis pipeline command not found; supports only SET and DELETE")
 
-	expirationHour int64
-	expiration     time.Duration
+	expiration time.Duration
 )
 
 // RedisCache is the interface of redis cache
@@ -38,6 +38,7 @@ type RedisCache interface {
 	Publish(ctx context.Context, topic string, payload interface{}) error
 	ZPopMinOrAddOne(ctx context.Context, key string, score float64, member interface{}) (bool, string, error)
 	ZRemOne(ctx context.Context, key string, member interface{}) error
+	HGetIfKeyExists(ctx context.Context, key, field string, dst interface{}) (bool, bool, error)
 	ExecPipeLine(ctx context.Context, cmds *[]RedisCmd) error
 }
 
@@ -98,8 +99,7 @@ type RedisPipelineCmd struct {
 }
 
 func NewRedisClient(config *config.Config) (redis.UniversalClient, error) {
-	expirationHour = config.Redis.ExpirationHour
-	expiration = time.Duration(expirationHour) * time.Hour
+	expiration = time.Duration(config.Redis.ExpirationHour) * time.Hour
 	RedisClient = redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs:          common.GetServerAddrs(config.Redis.Addrs),
 		Password:       config.Redis.Password,
@@ -109,22 +109,22 @@ func NewRedisClient(config *config.Config) (redis.UniversalClient, error) {
 		PoolSize:       config.Redis.PoolSize,
 		ReadTimeout:    time.Duration(config.Redis.ReadTimeoutMilliSecond) * time.Millisecond,
 		WriteTimeout:   time.Duration(config.Redis.WriteTimeoutMilliSecond) * time.Millisecond,
-		PoolTimeout:    60 * time.Second,
+		PoolTimeout:    5 * time.Second,
 	})
 	ctx := context.Background()
 	_, err := RedisClient.Ping(ctx).Result()
 	if err == redis.Nil || err != nil {
 		return nil, err
 	}
-	RedisClient.AddHook(redisotel.NewTracingHook())
+	if err = redisotel.InstrumentTracing(RedisClient); err != nil {
+		return nil, err
+	}
 	return RedisClient, nil
 }
 
 // NewRedisCache is the factory of redis cache
-func NewRedisCache(client redis.UniversalClient) RedisCache {
-	return &RedisCacheImpl{
-		client: client,
-	}
+func NewRedisCacheImpl(client redis.UniversalClient) *RedisCacheImpl {
+	return &RedisCacheImpl{client}
 }
 
 // Get returns true if the key already exists and set dst to the corresponding value
@@ -135,7 +135,9 @@ func (rc *RedisCacheImpl) Get(ctx context.Context, key string, dst interface{}) 
 	} else if err != nil {
 		return false, err
 	} else {
-		json.Unmarshal([]byte(val), dst)
+		if err = json.Unmarshal([]byte(val), dst); err != nil {
+			return false, err
+		}
 	}
 	return true, nil
 }
@@ -163,7 +165,9 @@ func (rc *RedisCacheImpl) HGet(ctx context.Context, key, field string, dst inter
 	} else if err != nil {
 		return false, err
 	} else {
-		json.Unmarshal([]byte(val), dst)
+		if err = json.Unmarshal([]byte(val), dst); err != nil {
+			return false, err
+		}
 	}
 	return true, nil
 }
@@ -225,6 +229,33 @@ func (rc *RedisCacheImpl) ZPopMinOrAddOne(ctx context.Context, key string, score
 }
 func (rc *RedisCacheImpl) ZRemOne(ctx context.Context, key string, member interface{}) error {
 	return rc.client.ZRem(ctx, key, member).Err()
+}
+
+var hgetIfKeyExists = redis.NewScript(`
+local key = KEYS[1]
+local field = ARGV[1]
+
+if redis.call("EXISTS", key) == 0 then
+  return ""
+end
+
+return redis.call("HGET", key, field)
+`)
+
+func (rc *RedisCacheImpl) HGetIfKeyExists(ctx context.Context, key, field string, dst interface{}) (bool, bool, error) {
+	val, err := hgetIfKeyExists.Run(ctx, rc.client, []string{key}, field).Text()
+	if err == redis.Nil {
+		return true, false, nil
+	} else if err != nil {
+		return false, false, err
+	} else if val == "" {
+		return false, false, nil
+	} else {
+		if err = json.Unmarshal([]byte(val), dst); err != nil {
+			return false, false, err
+		}
+	}
+	return true, true, nil
 }
 
 func (rc *RedisCacheImpl) ExecPipeLine(ctx context.Context, cmds *[]RedisCmd) error {
