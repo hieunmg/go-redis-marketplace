@@ -43,7 +43,7 @@ const (
 	VALEY_RPUSH
 )
 
-// RedisPayload is a abstract interface for payload type
+// ValkeyPayload is a abstract interface for payload type
 type ValkeyPayload interface {
 	Payload()
 }
